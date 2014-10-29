@@ -1,5 +1,5 @@
 [DEFAULT]
-admin_token = cf7d8cd76d694feaa4d4d9bf0862872f
+admin_token = ADMIN_TOKEN
 verbose = True
 
 [assignment]
@@ -13,7 +13,7 @@ verbose = True
 [credential]
 
 [database]
-connection = mysql://keystone:ac0851a38f3d437db85491be4e105a4c@controller/keystone
+connection = mysql://keystone:KEYSTONE_DBPASS@controller/keystone
 
 [ec2]
 
