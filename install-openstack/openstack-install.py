@@ -12,10 +12,11 @@ networknode = ''
 computenode = ''
 
 #Setting functions
-def execute(host, cmd):
+def execute(host, cmd, **kwargs):
     fabric.env.host_string = host
     for command in cmd:
-        print fabric.run(command)
+        with fabric.shell_env(**kwargs):
+            fabric.run(command)
 
 def upload(host, src, dst):
     fabric.env.host_string = host
@@ -42,13 +43,17 @@ def sed(oldstr, newstr, infile):
         for line in linelist: f.writelines(line)
 
 def installkeystone():
+    keystonecleanup = (
+        'rm -rvf /var/lib/keystone /etc/keystone',
+        'apt-get -y purge keystone'
+    )
     KEYSTONE_DBPASS = genpass()
-    #Remarks: 
-    #mysql binding address
-    #keyston db sync after uploading conf
-    keystonecmd = (
+    keystoneinit = (
         'apt-get -y install mysql-server python-mysqldb keystone python-keystoneclient',
+        'sed /bind-address/d -i /etc/mysql/my.cnf',
+        'service mysql restart',
         '''mysql -u root -e "
+        DROP DATABASE IF EXISTS keystone; \
         CREATE DATABASE keystone; \
         GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' \
         IDENTIFIED BY '%s'; \
@@ -63,11 +68,35 @@ def installkeystone():
       >> /var/spool/cron/crontabs/keystone'''
     )
     ADMIN_TOKEN = genpass()
+    ADMIN_PASS = genpass()
+    EMAIL_ADDRESS = 'support@mothership1.com'
+    DEMO_PASS = genpass()
     copytemplate('keystone.conf.template', 'keystone.conf')
     sed('ADMIN_TOKEN', ADMIN_TOKEN, 'keystone.conf')
     sed('KEYSTONE_DBPASS', KEYSTONE_DBPASS, 'keystone.conf')
+    execute(controllernode, keystonecleanup)
     execute(controllernode, ['mkdir -p /etc/keystone/'])
     upload(controllernode, 'keystone.conf', '/etc/keystone/keystone.conf')
-    execute(controllernode, keystonecmd)
+    execute(controllernode, keystoneinit)
+    keystoneadd = (
+        'keystone tenant-create --name admin --description "Admin Tenant"',
+        'keystone user-create --name admin --pass %s --email %s' % (ADMIN_PASS, EMAIL_ADDRESS),
+        'keystone role-create --name admin',
+        'keystone user-role-add --tenant admin --user admin --role admin',
+        'keystone user-role-add --tenant admin --user admin --role _member_',
+        'keystone tenant-create --name demo --description "Demo Tenant"',
+        'keystone user-create --name demo --pass %s --email %s' % (DEMO_PASS, EMAIL_ADDRESS),
+        'keystone user-role-add --tenant demo --user demo --role _member_',
+        'keystone tenant-create --name service --description "Service Tenant"',
+        '''keystone service-create --name keystone --type identity \
+  --description "OpenStack Identity"''',
+        '''keystone endpoint-create \
+  --service-id $(keystone service-list | awk '/ identity / {print $2}') \
+  --publicurl http://controller:5000/v2.0 \
+  --internalurl http://controller:5000/v2.0 \
+  --adminurl http://controller:35357/v2.0 \
+  --region regionOne'''
+    )
+    execute(controllernode, keystoneadd, OS_SERVICE_TOKEN=ADMIN_TOKEN, OS_SERVICE_ENDPOINT='http://controller:35357/v2.0')
     
 installkeystone()    
