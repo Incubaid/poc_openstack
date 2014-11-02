@@ -44,11 +44,15 @@ def sed(oldstr, newstr, infile):
         for line in linelist: f.writelines(line)
 
 def installprerequisites(node):
+    global RABBIT_PASS
+    RABBIT_PASS = genpass()
     initprerequisites = (
         'apt-get update',
         'apt-get -y install python-software-properties software-properties-common',
         'add-apt-repository -y cloud-archive:juno',
-        'apt-get update && apt-get -y dist-upgrade'
+        'apt-get update && apt-get -y dist-upgrade',
+        'apt-get -y install rabbitmq-server',
+        'rabbitmqctl change_password guest %s' % (RABBIT_PASS)
     )
     execute(node, initprerequisites)
 
@@ -163,9 +167,58 @@ def installglance(node):
     upload(node, 'glance-registry.conf', '/etc/glance/glance-registry.conf')
     execute(node, glanceinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
 
+def installnova(controller, compute):
+    NOVA_DBPASS = genpass()
+    NOVA_PASS = genpass()
+    novacleanup = (
+        'apt-get purge -y nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
+        'rm -rvf /var/log/nova /var/lib/nova/CA/private'
+    )
+    novainit = (
+        '''mysql -u root -e "
+        DROP DATABASE IF EXISTS nova; \
+        CREATE DATABASE nova; \
+        GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' \
+        IDENTIFIED BY '%s'; \
+        GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%s' \
+        IDENTIFIED BY '%s'; \
+        "
+        ''' % (NOVA_DBPASS, '%', NOVA_DBPASS),
+        'keystone user-create --name nova --pass %s' % (NOVA_PASS),
+        'keystone user-role-add --user nova --tenant service --role admin',
+        'keystone service-create --name nova --type compute --description "OpenStack Compute"',
+        '''keystone endpoint-create \
+  --service-id $(keystone service-list | awk '/ compute / {print $2}') \
+  --publicurl http://controller:8774/v2/%\(tenant_id\)s \
+  --internalurl http://controller:8774/v2/%\(tenant_id\)s \
+  --adminurl http://controller:8774/v2/%\(tenant_id\)s \
+  --region regionOne'''
+    )
+    execute(controller, novacleanup)
+    copytemplate('nova.conf.template', 'nova.conf')
+    sed('NOVA_DBPASS', NOVA_DBPASS, 'nova.conf')
+    sed('RABBIT_PASS', RABBIT_PASS, 'nova.conf')
+    sed('NOVA_PASS', NOVA_PASS, 'nova.conf')
+    sed('CONTROLLER_IP', controllernode, 'nova.conf')
+    execute(controller, ['mkdir -p /etc/nova/'])
+    upload(controller, 'nova.conf', '/etc/nova/nova.conf')
+    novaadd = (
+        'apt-get install -y nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
+        'su -s /bin/sh -c "nova-manage db sync" nova',
+        'service nova-api restart',
+        'service nova-cert restart',
+        'service nova-consoleauth restart',
+        'service nova-scheduler restart',
+        'service nova-conductor restart',
+        'service nova-novncproxy restart',
+        'rm -f /var/lib/nova/nova.sqlite'
+    )
+    execute(controller, novainit + novaadd, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+
 def main():
     installprerequisites(controllernode)
     installkeystone(controllernode)
     installglance(controllernode)
+    installnova(controllernode, computenode)
 
 if __name__ == '__main__': main()
