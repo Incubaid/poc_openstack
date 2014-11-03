@@ -8,8 +8,8 @@ import re
 
 #Setting variables
 controllernode = '10.0.3.2'
+computenode = '192.168.103.140'
 networknode = ''
-computenode = ''
 credentials = list()
 
 #Setting functions
@@ -44,8 +44,9 @@ def sed(oldstr, newstr, infile):
         for line in linelist: f.writelines(line)
 
 def installprerequisites(node):
-    global RABBIT_PASS
-    RABBIT_PASS = genpass()
+    if 'RABBIT_PASS' not in globals():
+        global RABBIT_PASS
+        RABBIT_PASS = genpass()
     initprerequisites = (
         'apt-get update',
         'apt-get -y install python-software-properties software-properties-common',
@@ -57,6 +58,7 @@ def installprerequisites(node):
     execute(node, initprerequisites)
 
 def installkeystone(node):
+    installprerequisites(node)
     global ADMIN_PASS
     global EMAIL_ADDRESS
     keystonecleanup = (
@@ -167,7 +169,8 @@ def installglance(node):
     upload(node, 'glance-registry.conf', '/etc/glance/glance-registry.conf')
     execute(node, glanceinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
 
-def installnova(controller, compute):
+def installnova(node):
+    global NOVA_PASS
     NOVA_DBPASS = genpass()
     NOVA_PASS = genpass()
     novacleanup = (
@@ -194,14 +197,14 @@ def installnova(controller, compute):
   --adminurl http://controller:8774/v2/%\(tenant_id\)s \
   --region regionOne'''
     )
-    execute(controller, novacleanup)
+    execute(node, novacleanup)
     copytemplate('nova.conf.template', 'nova.conf')
     sed('NOVA_DBPASS', NOVA_DBPASS, 'nova.conf')
     sed('RABBIT_PASS', RABBIT_PASS, 'nova.conf')
     sed('NOVA_PASS', NOVA_PASS, 'nova.conf')
     sed('CONTROLLER_IP', controllernode, 'nova.conf')
-    execute(controller, ['mkdir -p /etc/nova/'])
-    upload(controller, 'nova.conf', '/etc/nova/nova.conf')
+    execute(node, ['mkdir -p /etc/nova/'])
+    upload(node, 'nova.conf', '/etc/nova/nova.conf')
     novaadd = (
         'apt-get install -y nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
         'su -s /bin/sh -c "nova-manage db sync" nova',
@@ -213,12 +216,36 @@ def installnova(controller, compute):
         'service nova-novncproxy restart',
         'rm -f /var/lib/nova/nova.sqlite'
     )
-    execute(controller, novainit + novaadd, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+    execute(node, novainit + novaadd, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+
+def installnovacompute(node):
+    installprerequisites(node)
+    novacomputecleanup = (
+        'apt-get -y purge nova-compute sysfsutils',
+    )
+    novacomputeadd = (
+        'grep -q %s /etc/hosts || echo "%s	controller" >> /etc/hosts' % (controllernode, controllernode),
+        'apt-get -y install nova-compute sysfsutils',
+        'service nova-compute restart',
+        '''echo "export OS_TENANT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=%s
+export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (ADMIN_PASS)
+    )
+    copytemplate('compute-nova.conf.template', 'compute-nova.conf')
+    sed('RABBIT_PASS', RABBIT_PASS, 'compute-nova.conf')
+    sed('NOVA_PASS', NOVA_PASS, 'compute-nova.conf')
+    sed('COMPUTE_IP', computenode, 'compute-nova.conf')
+    execute(node, novacomputecleanup)
+    execute(node, ['mkdir -p /etc/nova/'])
+    upload(node, 'compute-nova.conf', '/etc/nova/nova.conf')
+    upload(node, 'nova-compute.conf.template', '/etc/nova/nova-compute.conf')
+    execute(node, novacomputeadd)
 
 def main():
-    installprerequisites(controllernode)
     installkeystone(controllernode)
     installglance(controllernode)
-    installnova(controllernode, computenode)
+    installnova(controllernode)
+    installnovacompute(computenode)
 
 if __name__ == '__main__': main()
