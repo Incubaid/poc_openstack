@@ -67,7 +67,7 @@ def installkeystone(node):
     )
     KEYSTONE_DBPASS = genpass()
     keystoneinit = (
-        'apt-get -y install mysql-server python-mysqldb keystone python-keystoneclient',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install mysql-server python-mysqldb keystone python-keystoneclient',
         'sed /bind-address/d -i /etc/mysql/my.cnf',
         'service mysql restart',
         '''mysql -u root -e "
@@ -141,7 +141,7 @@ def installglance(node):
         IDENTIFIED BY '%s'; \
         "
         ''' % (GLANCE_DBPASS, '%', GLANCE_DBPASS),
-        'apt-get -y install glance python-glanceclient',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install glance python-glanceclient',
         'su -s /bin/sh -c "glance-manage db_sync" glance',
         'service keystone restart ; sleep 5',
         'keystone user-create --name glance --pass %s --email %s' % (GLANCE_PASS, EMAIL_ADDRESS),
@@ -171,8 +171,10 @@ def installglance(node):
 
 def installnova(node):
     global NOVA_PASS
+    global NEUTRON_PASS
     NOVA_DBPASS = genpass()
     NOVA_PASS = genpass()
+    NEUTRON_PASS = genpass()
     novacleanup = (
         'apt-get purge -y nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
         'rm -rvf /var/log/nova /var/lib/nova/CA/private'
@@ -202,11 +204,12 @@ def installnova(node):
     sed('NOVA_DBPASS', NOVA_DBPASS, 'nova.conf')
     sed('RABBIT_PASS', RABBIT_PASS, 'nova.conf')
     sed('NOVA_PASS', NOVA_PASS, 'nova.conf')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'nova.conf')
     sed('CONTROLLER_IP', controllernode, 'nova.conf')
     execute(node, ['mkdir -p /etc/nova/'])
     upload(node, 'nova.conf', '/etc/nova/nova.conf')
     novaadd = (
-        'apt-get install -y nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
+        'apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
         'su -s /bin/sh -c "nova-manage db sync" nova',
         'service nova-api restart',
         'service nova-cert restart',
@@ -225,7 +228,7 @@ def installnovacompute(node):
     )
     novacomputeadd = (
         'grep -q %s /etc/hosts || echo "%s	controller" >> /etc/hosts' % (controllernode, controllernode),
-        'apt-get -y install nova-compute sysfsutils',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install nova-compute sysfsutils',
         'service nova-compute restart',
         '''echo "export OS_TENANT_NAME=admin
 export OS_USERNAME=admin
@@ -242,10 +245,56 @@ export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (A
     upload(node, 'nova-compute.conf.template', '/etc/nova/nova-compute.conf')
     execute(node, novacomputeadd)
 
+def installneutron(node):
+    NEUTRON_DBPASS = genpass()
+    neutroncontrollercleanup = (
+        'apt-get -y purge neutron-server neutron-plugin-ml2',
+    )
+    neutroncontrollerinit = (
+        '''mysql -u root -e "
+        DROP DATABASE IF EXISTS neutron; \
+        CREATE DATABASE neutron; \
+        GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' \
+        IDENTIFIED BY '%s'; \
+        GRANT ALL PRIVILEGES ON glance.* TO 'neutron'@'%s' \
+        IDENTIFIED BY '%s'; \
+        "
+        ''' % (NEUTRON_DBPASS, '%', NEUTRON_DBPASS),
+        'keystone user-create --name neutron --pass %s' % (NEUTRON_PASS),
+        'keystone user-role-add --user neutron --tenant service --role admin',
+        'keystone service-create --name neutron --type network --description "OpenStack Networking"',
+        '''keystone endpoint-create \
+  --service-id $(keystone service-list | awk '/ network / {print $2}') \
+  --publicurl http://controller:9696 \
+  --adminurl http://controller:9696 \
+  --internalurl http://controller:9696 \
+  --region regionOne''',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install neutron-server neutron-plugin-ml2 python-neutronclient',
+        'su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade juno" neutron',
+        'service nova-api restart',
+        'service nova-scheduler restart',
+        'service nova-conductor restart',
+        'service neutron-server restart'
+    )
+    execute(controllernode, neutroncontrollercleanup)
+    copytemplate('neutron.conf.template', 'neutron.conf')
+    sed('NEUTRON_DBPASS', NEUTRON_DBPASS, 'neutron.conf')
+    sed('RABBIT_PASS', RABBIT_PASS, 'neutron.conf')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'neutron.conf')
+    with fabric.hide('running', 'output'):
+        fabric.env.host_string = controllernode
+        SERVICE_TENANT_ID = fabric.run("source /root/admin-openrc.sh && keystone tenant-get service | grep id | awk '{print $4}'")
+    sed('SERVICE_TENANT_ID', SERVICE_TENANT_ID, 'neutron.conf')
+    sed('NOVA_PASS', NOVA_PASS, 'neutron.conf')
+    execute(controllernode, ['mkdir -p /etc/neutron/'])
+    upload(controllernode, 'neutron.conf', '/etc/neutron/neutron.conf')
+    execute(controllernode, neutroncontrollerinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+
 def main():
     installkeystone(controllernode)
     installglance(controllernode)
     installnova(controllernode)
     installnovacompute(computenode)
+    installneutron(networknode)
 
 if __name__ == '__main__': main()

@@ -1,0 +1,46 @@
+[DEFAULT]
+rpc_backend = rabbit
+rabbit_host = controller
+rabbit_password = RABBIT_PASS
+
+lock_path = $state_path/lock
+
+auth_strategy = keystone
+
+core_plugin = ml2
+service_plugins = router
+allow_overlapping_ips = True
+
+notify_nova_on_port_status_changes = True
+notify_nova_on_port_data_changes = True
+nova_url = http://controller:8774/v2
+nova_admin_auth_url = http://controller:35357/v2.0
+nova_region_name = regionOne
+nova_admin_username = nova
+nova_admin_tenant_id = SERVICE_TENANT_ID
+nova_admin_password = NOVA_PASS
+
+verbose = True
+
+[keystone_authtoken]
+auth_uri = http://controller:5000/v2.0
+identity_uri = http://controller:35357
+admin_tenant_name = service
+admin_user = neutron
+admin_password = NEUTRON_PASS
+
+[matchmaker_redis]
+
+[matchmaker_ring]
+
+[quotas]
+
+[agent]
+root_helper = sudo /usr/bin/neutron-rootwrap /etc/neutron/rootwrap.conf
+
+[database]
+connection = mysql://neutron:NEUTRON_DBPASS@controller/neutron
+
+[service_providers]
+service_provider=LOADBALANCER:Haproxy:neutron.services.loadbalancer.drivers.haproxy.plugin_driver.HaproxyOnHostPluginDriver:default
+service_provider=VPN:openswan:neutron.services.vpn.service_drivers.ipsec.IPsecVPNDriver:default

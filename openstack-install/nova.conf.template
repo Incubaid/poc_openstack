@@ -24,6 +24,19 @@ vncserver_proxyclient_address = CONTROLLER_IP
 
 verbose = True
 
+network_api_class = nova.network.neutronv2.api.API
+security_group_api = neutron
+linuxnet_interface_driver = nova.network.linux_net.LinuxOVSInterfaceDriver
+firewall_driver = nova.virt.firewall.NoopFirewallDriver
+
+[neutron]
+url = http://controller:9696
+auth_strategy = keystone
+admin_auth_url = http://controller:35357/v2.0
+admin_tenant_name = service
+admin_username = neutron
+admin_password = NEUTRON_PASS
+
 [keystone_authtoken]
 auth_uri = http://controller:5000/v2.0
 identity_uri = http://controller:35357
