@@ -37,6 +37,9 @@ admin_tenant_name = service
 admin_username = neutron
 admin_password = NEUTRON_PASS
 
+service_metadata_proxy = True
+metadata_proxy_shared_secret = METADATA_SECRET
+
 [keystone_authtoken]
 auth_uri = http://controller:5000/v2.0
 identity_uri = http://controller:35357

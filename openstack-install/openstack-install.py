@@ -9,7 +9,7 @@ import re
 #Setting variables
 controllernode = '10.0.3.2'
 computenode = '192.168.103.140'
-networknode = ''
+networknode = '10.0.3.66'
 credentials = list()
 
 #Setting functions
@@ -47,7 +47,11 @@ def installprerequisites(node):
     if 'RABBIT_PASS' not in globals():
         global RABBIT_PASS
         RABBIT_PASS = genpass()
+    if 'METADATA_SECRET' not in globals():
+        global METADATA_SECRET
+        METADATA_SECRET = genpass()
     initprerequisites = (
+        'grep -q %s /etc/hosts || echo "%s	controller" >> /etc/hosts' % (controllernode, controllernode),
         'apt-get update',
         'apt-get -y install python-software-properties software-properties-common',
         'add-apt-repository -y cloud-archive:juno',
@@ -57,8 +61,8 @@ def installprerequisites(node):
     )
     execute(node, initprerequisites)
 
-def installkeystone(node):
-    installprerequisites(node)
+def installkeystone(controller):
+    installprerequisites(controller)
     global ADMIN_PASS
     global EMAIL_ADDRESS
     keystonecleanup = (
@@ -79,7 +83,6 @@ def installkeystone(node):
         IDENTIFIED BY '%s';
         "
         ''' % (KEYSTONE_DBPASS, '%', KEYSTONE_DBPASS),
-        'grep -q %s /etc/hosts || echo "%s	controller" >> /etc/hosts' % (node, node),
         'su -s /bin/sh -c "keystone-manage db_sync" keystone',
         '''(crontab -l -u keystone 2>&1 | grep -q token_flush) || \
       echo "@hourly /usr/bin/keystone-manage token_flush >/var/log/keystone/keystone-tokenflush.log 2>&1" \
@@ -92,10 +95,10 @@ def installkeystone(node):
     copytemplate('keystone.conf.template', 'keystone.conf')
     sed('ADMIN_TOKEN', ADMIN_TOKEN, 'keystone.conf')
     sed('KEYSTONE_DBPASS', KEYSTONE_DBPASS, 'keystone.conf')
-    execute(node, keystonecleanup)
-    execute(node, ['mkdir -p /etc/keystone/'])
-    upload(node, 'keystone.conf', '/etc/keystone/keystone.conf')
-    execute(node, keystoneinit)
+    execute(controller, keystonecleanup)
+    execute(controller, ['mkdir -p /etc/keystone/'])
+    upload(controller, 'keystone.conf', '/etc/keystone/keystone.conf')
+    execute(controller, keystoneinit)
     keystoneadd = (
         'keystone tenant-create --name admin --description "Admin Tenant"',
         'keystone user-create --name admin --pass %s --email %s' % (ADMIN_PASS, EMAIL_ADDRESS),
@@ -120,9 +123,9 @@ export OS_USERNAME=admin
 export OS_PASSWORD=%s
 export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (ADMIN_PASS)
     )
-    execute(node, keystoneadd, OS_SERVICE_TOKEN=ADMIN_TOKEN, OS_SERVICE_ENDPOINT='http://controller:35357/v2.0')
+    execute(controller, keystoneadd, OS_SERVICE_TOKEN=ADMIN_TOKEN, OS_SERVICE_ENDPOINT='http://controller:35357/v2.0')
 
-def installglance(node):
+def installglance(controller):
     GLANCE_DBPASS = genpass()
     GLANCE_PASS = genpass()
     glancecleanup = (
@@ -157,19 +160,19 @@ def installglance(node):
         'service glance-api restart',
         'rm -f /var/lib/glance/glance.sqlite'
     )
-    execute(node, glancecleanup)
-    execute(node, ['mkdir -p /etc/glance/'])
+    execute(controller, glancecleanup)
+    execute(controller, ['mkdir -p /etc/glance/'])
     copytemplate('glance-api.conf.template', 'glance-api.conf')
     sed('GLANCE_DBPASS', GLANCE_DBPASS, 'glance-api.conf')
     sed('GLANCE_PASS', GLANCE_PASS, 'glance-api.conf')
-    upload(node, 'glance-api.conf', '/etc/glance/glance-api.conf')
+    upload(controller, 'glance-api.conf', '/etc/glance/glance-api.conf')
     copytemplate('glance-registry.conf.template', 'glance-registry.conf')
     sed('GLANCE_DBPASS', GLANCE_DBPASS, 'glance-registry.conf')
     sed('GLANCE_PASS', GLANCE_PASS, 'glance-registry.conf')
-    upload(node, 'glance-registry.conf', '/etc/glance/glance-registry.conf')
-    execute(node, glanceinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+    upload(controller, 'glance-registry.conf', '/etc/glance/glance-registry.conf')
+    execute(controller, glanceinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
 
-def installnova(node):
+def installnova(controller):
     global NOVA_PASS
     global NEUTRON_PASS
     NOVA_DBPASS = genpass()
@@ -199,15 +202,16 @@ def installnova(node):
   --adminurl http://controller:8774/v2/%\(tenant_id\)s \
   --region regionOne'''
     )
-    execute(node, novacleanup)
+    execute(controller, novacleanup)
     copytemplate('nova.conf.template', 'nova.conf')
     sed('NOVA_DBPASS', NOVA_DBPASS, 'nova.conf')
     sed('RABBIT_PASS', RABBIT_PASS, 'nova.conf')
     sed('NOVA_PASS', NOVA_PASS, 'nova.conf')
     sed('NEUTRON_PASS', NEUTRON_PASS, 'nova.conf')
     sed('CONTROLLER_IP', controllernode, 'nova.conf')
-    execute(node, ['mkdir -p /etc/nova/'])
-    upload(node, 'nova.conf', '/etc/nova/nova.conf')
+    sed('METADATA_SECRET', METADATA_SECRET, 'nova.conf')
+    execute(controller, ['mkdir -p /etc/nova/'])
+    upload(controller, 'nova.conf', '/etc/nova/nova.conf')
     novaadd = (
         'apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nova-api nova-cert nova-conductor nova-consoleauth nova-novncproxy nova-scheduler python-novaclient',
         'su -s /bin/sh -c "nova-manage db sync" nova',
@@ -219,15 +223,14 @@ def installnova(node):
         'service nova-novncproxy restart',
         'rm -f /var/lib/nova/nova.sqlite'
     )
-    execute(node, novainit + novaadd, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+    execute(controller, novainit + novaadd, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
 
-def installnovacompute(node):
-    installprerequisites(node)
+def installnovacompute(compute):
+    installprerequisites(compute)
     novacomputecleanup = (
         'apt-get -y purge nova-compute sysfsutils',
     )
     novacomputeadd = (
-        'grep -q %s /etc/hosts || echo "%s	controller" >> /etc/hosts' % (controllernode, controllernode),
         'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install nova-compute sysfsutils',
         'service nova-compute restart',
         '''echo "export OS_TENANT_NAME=admin
@@ -239,13 +242,13 @@ export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (A
     sed('RABBIT_PASS', RABBIT_PASS, 'compute-nova.conf')
     sed('NOVA_PASS', NOVA_PASS, 'compute-nova.conf')
     sed('COMPUTE_IP', computenode, 'compute-nova.conf')
-    execute(node, novacomputecleanup)
-    execute(node, ['mkdir -p /etc/nova/'])
-    upload(node, 'compute-nova.conf', '/etc/nova/nova.conf')
-    upload(node, 'nova-compute.conf.template', '/etc/nova/nova-compute.conf')
-    execute(node, novacomputeadd)
+    execute(compute, novacomputecleanup)
+    execute(compute, ['mkdir -p /etc/nova/'])
+    upload(compute, 'compute-nova.conf', '/etc/nova/nova.conf')
+    upload(compute, 'nova-compute.conf.template', '/etc/nova/nova-compute.conf')
+    execute(compute, novacomputeadd)
 
-def installneutron(node):
+def installneutron(controller, networkserver):
     NEUTRON_DBPASS = genpass()
     neutroncontrollercleanup = (
         'apt-get -y purge neutron-server neutron-plugin-ml2',
@@ -276,25 +279,66 @@ def installneutron(node):
         'service nova-conductor restart',
         'service neutron-server restart'
     )
-    execute(controllernode, neutroncontrollercleanup)
+    execute(controller, neutroncontrollercleanup)
     copytemplate('neutron.conf.template', 'neutron.conf')
     sed('NEUTRON_DBPASS', NEUTRON_DBPASS, 'neutron.conf')
     sed('RABBIT_PASS', RABBIT_PASS, 'neutron.conf')
     sed('NEUTRON_PASS', NEUTRON_PASS, 'neutron.conf')
     with fabric.hide('running', 'output'):
-        fabric.env.host_string = controllernode
+        fabric.env.host_string = controller
         SERVICE_TENANT_ID = fabric.run("source /root/admin-openrc.sh && keystone tenant-get service | grep id | awk '{print $4}'")
     sed('SERVICE_TENANT_ID', SERVICE_TENANT_ID, 'neutron.conf')
     sed('NOVA_PASS', NOVA_PASS, 'neutron.conf')
-    execute(controllernode, ['mkdir -p /etc/neutron/'])
-    upload(controllernode, 'neutron.conf', '/etc/neutron/neutron.conf')
-    execute(controllernode, neutroncontrollerinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+    execute(controller, ['mkdir -p /etc/neutron/'])
+    upload(controller, 'neutron.conf', '/etc/neutron/neutron.conf')
+    execute(controller, neutroncontrollerinit, OS_TENANT_NAME='admin', OS_USERNAME='admin', OS_PASSWORD=ADMIN_PASS, OS_AUTH_URL='http://controller:35357/v2.0')
+    installprerequisites(networkserver)
+    neutronnetworkcleanup = (
+        'apt-get -y purge neutron-plugin-ml2 neutron-plugin-openvswitch-agent neutron-l3-agent neutron-dhcp-agent',
+    )
+    with fabric.hide('running', 'output'):
+        fabric.env.host_string = networkserver
+        INTERFACE_NAME = fabric.run("ip route show | grep 'default via' | awk '{print $5}'")
+    neutronnetworkinit = (
+        '''echo "net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf''',
+        'sysctl -p',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install neutron-plugin-ml2 neutron-plugin-openvswitch-agent neutron-l3-agent neutron-dhcp-agent ethtool',
+        'service openvswitch-switch restart',
+        'ovs-vsctl add-br br-ex &',
+        'ovs-vsctl add-port br-ex %s &' % (INTERFACE_NAME),
+        'ethtool -K %s gro off' % (INTERFACE_NAME),
+        'service neutron-plugin-openvswitch-agent restart',
+        'service neutron-l3-agent restart',
+        'service neutron-dhcp-agent restart',
+        'service neutron-metadata-agent restart',
+        '''echo "export OS_TENANT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=%s
+export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (ADMIN_PASS)
+    )
+    execute(networkserver, neutronnetworkcleanup)
+    copytemplate('networknode-neutron.conf.template', 'neutron.conf')
+    sed('RABBIT_PASS', RABBIT_PASS, 'neutron.conf')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'neutron.conf')
+    execute(networkserver, ['mkdir -p /etc/neutron/plugins/ml2/'])
+    upload(networkserver, 'neutron.conf', '/etc/neutron/neutron.conf')
+    copytemplate('networknode-ml2_conf.ini.template', 'ml2_conf.ini')
+    sed('INSTANCE_TUNNELS_INTERFACE_IP_ADDRESS', '10.10.110.1', 'ml2_conf.ini')
+    upload(networkserver, 'ml2_conf.ini', '/etc/neutron/plugins/ml2/ml2_conf.ini')
+    upload(networkserver, 'l3_agent.ini.template', '/etc/neutron/l3_agent.ini')
+    upload(networkserver, 'dhcp_agent.ini.template', '/etc/neutron/dhcp_agent.ini')
+    copytemplate('metadata_agent.ini.template', 'metadata_agent.ini')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'metadata_agent.ini')
+    sed('METADATA_SECRET', METADATA_SECRET, 'metadata_agent.ini')
+    execute(networkserver, neutronnetworkinit)
 
 def main():
     installkeystone(controllernode)
     installglance(controllernode)
     installnova(controllernode)
     installnovacompute(computenode)
-    installneutron(networknode)
+    installneutron(controllernode, networknode)
 
 if __name__ == '__main__': main()
