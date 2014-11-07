@@ -243,6 +243,7 @@ export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (A
     sed('RABBIT_PASS', RABBIT_PASS, 'computenode/nova.conf')
     sed('NOVA_PASS', NOVA_PASS, 'computenode/nova.conf')
     sed('COMPUTE_IP', computenode, 'computenode/nova.conf')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'computenode/nova.conf')
     execute(node, novacomputecleanup)
     execute(node, ['mkdir -p /etc/nova/'])
     upload(node, 'computenode/nova.conf', '/etc/nova/nova.conf')
@@ -337,6 +338,31 @@ export OS_AUTH_URL=http://controller:35357/v2.0" > /root/admin-openrc.sh''' % (A
     sed('NEUTRON_PASS', NEUTRON_PASS, 'networknode/metadata_agent.ini')
     sed('METADATA_SECRET', METADATA_SECRET, 'networknode/metadata_agent.ini')
     execute(node, neutroninit)
+def installneutroncompute(node):
+    neutroncleanup = (
+    'apt-get -y purge neutron-plugin-ml2 neutron-plugin-openvswitch-agent',
+    )
+    neutroninit = (
+    '''echo "net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf''',
+    'sysctl -p',
+    'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install neutron-plugin-ml2 neutron-plugin-openvswitch-agent',
+    'service openvswitch-switch restart',
+    'service nova-compute restart',
+    'service neutron-plugin-openvswitch-agent restart'
+    )
+    execute(node, neutroncleanup)
+    copytemplate('computenode/neutron.conf.template', 'computenode/neutron.conf')
+    sed('RABBIT_PASS', RABBIT_PASS, 'computenode/neutron.conf')
+    sed('NEUTRON_PASS', NEUTRON_PASS, 'computenode/neutron.conf')
+    execute(node, ['mkdir -p /etc/neutron/plugins/ml2/'])
+    upload(node, 'computenode/neutron.conf', '/etc/neutron/neutron.conf')
+    upload(node, 'computenode/ml2_conf.ini.template', '/etc/neutron/plugins/ml2/ml2_conf.ini')
+    copytemplate('computenode/ml2_conf.ini.template', 'computenode/ml2_conf.ini')
+    sed('INSTANCE_TUNNELS_INTERFACE_IP_ADDRESS', '10.10.110.1', 'computenode/ml2_conf.ini')
+    upload(node, 'computenode/ml2_conf.ini', '/etc/neutron/plugins/ml2/ml2_conf.ini')
+    execute(node, neutroninit)
+
 
 def main():
     installkeystone(controllernode)
@@ -345,5 +371,6 @@ def main():
     installnovacompute(computenode)
     installneutroncontroller(controllernode)
     installneutronnetwork(networknode)
+    installneutroncompute(computenode)
 
 if __name__ == '__main__': main()
