@@ -363,6 +363,18 @@ net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf''',
     upload(node, 'computenode/ml2_conf.ini', '/etc/neutron/plugins/ml2/ml2_conf.ini')
     execute(node, neutroninit)
 
+def installhorizon(node):
+    horizoncleanup = (
+        'apt-get purge -y openstack-dashboard apache2 libapache2-mod-wsgi memcached',
+    )
+    horizoninit = (
+        'grep -q keystone /etc/sudoers || echo "keystone    ALL=(ALL:ALL) ALL" >> /etc/sudoers',
+        'apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" install openstack-dashboard apache2 libapache2-mod-wsgi memcached python-memcache',
+        'service apache2 restart',
+        'service memcached restart'
+    )
+    execute(node, horizoncleanup)
+    execute(node, horizoninit)
 
 def main():
     installkeystone(controllernode)
@@ -372,5 +384,6 @@ def main():
     installneutroncontroller(controllernode)
     installneutronnetwork(networknode)
     installneutroncompute(computenode)
+    installhorizon(controllernode)
 
 if __name__ == '__main__': main()
