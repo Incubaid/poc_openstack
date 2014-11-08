@@ -7,10 +7,9 @@ import shutil
 import re
 
 #Setting variables
-controllernode = '10.0.3.2'
-computenode = '192.168.103.140'
-networknode = '10.0.3.66'
-credentials = list()
+controllernode = ''
+computenode = ''
+networknode = ''
 
 #Setting functions
 def execute(host, cmd, **kwargs):
